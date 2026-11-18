@@ -290,10 +290,28 @@ function tokenize(text) {
   let i = 0;
   const n = text.length;
   const isPunct = (ch) => "{}()|,".includes(ch);
+
   while (i < n) {
     const ch = text[i];
     if (/\s/.test(ch)) { i++; continue; }
     if (isPunct(ch)) { tokens.push(ch); i++; continue; }
+
+    // 引号: 整段读进来(里面的空格/括号/竖线都算文本), 再把后面的 :16 之类接上
+    if (ch === '"') {
+      let j = i;
+      j++;                                  // 跳过开引号
+      while (j < n) {
+        if (text[j] === "\\" && j + 1 < n) { j += 2; continue; }
+        if (text[j] === '"') { j++; break; }
+        j++;
+      }
+      // 接着读引号后面的非空白非标点字符(比如 :16)
+      while (j < n && !/\s/.test(text[j]) && !isPunct(text[j])) j++;
+      tokens.push(text.slice(i, j));
+      i = j;
+      continue;
+    }
+
     let j = i;
     while (j < n && !/\s/.test(text[j]) && !isPunct(text[j])) j++;
     tokens.push(text.slice(i, j));
