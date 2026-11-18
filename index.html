@@ -110,6 +110,13 @@
     <div class="log" id="log"></div>
   </div>
 
+  <div class="panel" id="lyricPanel" style="display:none">
+    <div class="now" style="color:var(--dim);font-size:13px;margin-bottom:8px">
+      歌词 <span class="tag" id="lyricCount"></span>
+    </div>
+    <div id="lyrics" style="max-height:170px;overflow-y:auto;line-height:2.1;font-size:15px;color:#7f9ea3"></div>
+  </div>
+
   <div class="panel">
     <div class="now" id="nowName">未选择乐谱</div>
     <div class="bar"><i id="progress"></i></div>
@@ -344,10 +351,22 @@ function parseNoteToken(tok) {
   return note;
 }
 
+/** 时值记号(1/2/4/8/16/32/64, 可带一个附点) → tick 数 */
 function durationTicks(duration, dot, bpm) {
   let beats = 4 / duration;
   if (dot) beats *= 1.5;
   return beats * (1200 / bpm);
+}
+
+/** 歌词块里的时值: 和音符一样的写法, 例如 16 / 8. */
+function vocalDurationTicks(text, bpm) {
+  let value = String(text).trim();
+  let dot = false;
+  if (value.endsWith(".")) { dot = true; value = value.slice(0, -1); }
+  if (!/^\d+$/.test(value)) throw new Error("V 时值不合法: " + text);
+  const duration = parseInt(value, 10);
+  if (duration < 1) throw new Error("V 时值必须为正: " + text);
+  return durationTicks(duration, dot, bpm);
 }
 
 /** 连音把 8va/8vb 标签换算成八度偏移 */
@@ -363,6 +382,8 @@ function octaveShiftOf(tags) {
 function parseScore(text) {
   const tokens = tokenize(stripComments(text));
   const events = [];
+  const lyrics = [];
+  const warnings = [];
   const state = {
     bpm: 120,
     gSharps: new Set(), gFlats: new Set(),
@@ -437,6 +458,51 @@ function parseScore(text) {
     }
   }
 
+  /** 解析一个歌词块, 返回结束 tick */
+  function parseVocal(body, startTick, bpm, lyrics) {
+    let time = startTick;
+    let i = 0;
+    while (i < body.length) {
+      const tok = body[i];
+      if (tok === "|" || tok === ",") { i++; continue; }
+
+      if (tok.startsWith('"')) {
+        // 找到配对的引号(考虑转义)
+        let end = -1;
+        for (let k = 1; k < tok.length; k++) {
+          if (tok[k] === "\\" && k + 1 < tok.length) { k++; continue; }
+          if (tok[k] === '"') { end = k; break; }
+        }
+        if (end < 0) { warnings.push("歌词引号未闭合: " + tok); i++; continue; }
+        let text = tok.slice(1, end).replace(/\\(.)/g, "$1");
+        const suffix = tok.slice(end + 1);
+        if (!suffix.startsWith(":")) { warnings.push("歌词缺少冒号: " + tok); i++; continue; }
+        let duration = 0;
+        try {
+          duration = vocalDurationTicks(suffix.slice(1), bpm);
+        } catch (error) {
+          warnings.push("歌词时值无法识别: " + tok);
+          i++;
+          continue;
+        }
+        if (text.length > 0) {
+          lyrics.push({ tick: Math.round(time), text });
+        }
+        time += duration;
+      } else if (tok.startsWith("0:")) {
+        try {
+          time += vocalDurationTicks(tok.slice(2), bpm);
+        } catch (error) {
+          warnings.push("空拍时值无法识别: " + tok);
+        }
+      } else {
+        warnings.push("V 块里跳过的记号: " + tok);
+      }
+      i++;
+    }
+    return Math.round(time);
+  }
+
   /** 解析一个子块(一个声部), 返回它的结束 tick */
   function parseVoice(type, tags, body, startTick, bpm) {
     const isDrum = type === "D";
@@ -471,11 +537,21 @@ function parseScore(text) {
         }
         if (idx < body.length) idx++;      // 跳过 )
         if (inner.length === 0) continue;
-        const firstNote = parseNoteToken(inner[0]);
-        const chordDuration = durationTicks(firstNote.duration, firstNote.dot, bpm);
+        let chordDuration = 0;
+        try {
+          const firstNote = parseNoteToken(inner[0]);
+          chordDuration = durationTicks(firstNote.duration, firstNote.dot, bpm);
+        } catch (error) {
+          warnings.push("和弦时值无法识别: " + inner[0]);
+          continue;
+        }
         for (const rawInner of inner) {
-          emitNote(rawInner, time, chordDuration, isDrum, treble, octaveShift,
-                   keySharps, keyFlats, forcedInstrument, barAccidentals);
+          try {
+            emitNote(rawInner, time, chordDuration, isDrum, treble, octaveShift,
+                     keySharps, keyFlats, forcedInstrument, barAccidentals);
+          } catch (error) {
+            warnings.push("跳过和弦里的音: " + rawInner + " (" + error.message + ")");
+          }
         }
         time += chordDuration;
         continue;
@@ -495,12 +571,22 @@ function parseScore(text) {
       }
       if (group.length === 0) break;
 
-      const first = parseNoteToken(group[0]);
-      const groupDuration = durationTicks(first.duration, first.dot, bpm);
+      let groupDuration = 0;
+      try {
+        const first = parseNoteToken(group[0]);
+        groupDuration = durationTicks(first.duration, first.dot, bpm);
+      } catch (error) {
+        warnings.push("时值无法识别: " + group[0]);
+        continue;
+      }
 
       for (const raw of group) {
-        emitNote(raw, time, groupDuration, isDrum, treble, octaveShift,
-                 keySharps, keyFlats, forcedInstrument, barAccidentals);
+        try {
+          emitNote(raw, time, groupDuration, isDrum, treble, octaveShift,
+                   keySharps, keyFlats, forcedInstrument, barAccidentals);
+        } catch (error) {
+          warnings.push("跳过音: " + raw + " (" + error.message + ")");
+        }
       }
       time += groupDuration;
     }
@@ -553,7 +639,9 @@ function parseScore(text) {
       if (tokens[i] !== ":") throw new Error("子块头后面应该是 :");
       i++;
     } else {
-      throw new Error("无法识别的记号: " + tok);
+      warnings.push("块外跳过的记号: " + tok);
+      i++;
+      continue;
     }
 
     if (tokens[i] !== "{") throw new Error("子块头后面应该是 {");
@@ -563,14 +651,19 @@ function parseScore(text) {
     if (i >= n) throw new Error("子块没有闭合的 }");
     i++;
 
-    if (type === "V") continue;   // 歌词块跳过
+    if (type === "V") {
+      const end = parseVocal(body, blockStart, state.bpm, lyrics);
+      blockEnd = Math.max(blockEnd, end);
+      continue;
+    }
 
     const end = parseVoice(type, tags, body, blockStart, state.bpm);
     blockEnd = Math.max(blockEnd, end);
   }
 
   events.sort((a, b) => a.tick - b.tick);
-  return { events, bpm: state.bpm };
+  lyrics.sort((a, b) => a.tick - b.tick);
+  return { events, bpm: state.bpm, lyrics, warnings };
 }
 
 /* ------------------------------------------------------------------ 音频 */
@@ -711,7 +804,15 @@ const player = {
       ? `音域 ${lowest}~${highest}`
       : "无旋律音";
     ui.log(`已载入 ${name}: ${result.events.length} 个音(鼓 ${drums}), bpm ${result.bpm}, `
-      + `${range}, 时长 ${(this.totalTicks * TICK_MS / 1000).toFixed(1)}s`);
+      + `${range}, 时长 ${(this.totalTicks * TICK_MS / 1000).toFixed(1)}s`
+      + (result.lyrics && result.lyrics.length ? `, 歌词 ${result.lyrics.length} 句` : ""));
+    if (result.warnings && result.warnings.length) {
+      const unique = [...new Set(result.warnings)];
+      ui.log(ui.logEl.textContent
+        + `\n跳过 ${result.warnings.length} 处无法识别的写法(前 6 个): `
+        + unique.slice(0, 6).join(" / "));
+      console.warn("解析警告", result.warnings);
+    }
     ui.onLoaded(name, result);
   },
 
@@ -761,6 +862,7 @@ const player = {
     this.nextIndex = 0;
     ui.onPlayState(false);
     ui.setProgress(0, this.totalTicks || 0);
+    ui.updateLyrics(-1);
   },
 
   tickNow() {
@@ -779,6 +881,7 @@ const player = {
       audio.playEvent(event, when);
     }
     ui.setProgress(now, this.totalTicks);
+    ui.updateLyrics(now);
     if (this.nextIndex >= events.length && now > this.totalTicks + 20) this.stop();
   },
 };
@@ -901,6 +1004,62 @@ const ui = {
     this.noteEl.textContent = result.events.length + " 个音";
     document.getElementById("play").disabled = false;
     this.setProgress(0, player.totalTicks);
+    this.renderLyrics(result.lyrics || []);
+  },
+
+  lyricLines: [],
+  activeLyric: -1,
+
+  renderLyrics(lyrics) {
+    const panel = document.getElementById("lyricPanel");
+    const holder = document.getElementById("lyrics");
+    this.lyricLines = lyrics;
+    this.activeLyric = -1;
+    holder.innerHTML = "";
+    if (!lyrics || lyrics.length === 0) {
+      panel.style.display = "none";
+      return;
+    }
+    panel.style.display = "";
+    document.getElementById("lyricCount").textContent = lyrics.length + " 句";
+    lyrics.forEach((line, index) => {
+      const span = document.createElement("span");
+      span.dataset.index = String(index);
+      span.style.marginRight = "14px";
+      span.style.transition = "color .12s";
+      span.textContent = line.text;
+      span.onclick = () => {
+        // 点歌词可以跳转(停止后再按播放)
+        return;
+      };
+      holder.appendChild(span);
+    });
+  },
+
+  /** 根据当前 tick 高亮正在唱的那句 */
+  updateLyrics(tick) {
+    const lines = this.lyricLines;
+    if (!lines || lines.length === 0) return;
+    let index = -1;
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].tick <= tick) index = i;
+      else break;
+    }
+    if (index === this.activeLyric) return;
+    this.activeLyric = index;
+    const holder = document.getElementById("lyrics");
+    const children = holder.children;
+    for (let i = 0; i < children.length; i++) {
+      const active = i === index;
+      children[i].style.color = active ? "var(--cyan)" : "#7f9ea3";
+      children[i].style.fontWeight = active ? "700" : "400";
+      children[i].style.textShadow = active ? "0 0 10px rgba(101,235,246,.55)" : "none";
+    }
+    if (index >= 0 && children[index]) {
+      const target = children[index];
+      const offset = target.offsetTop - holder.clientHeight / 2 + target.offsetHeight / 2;
+      holder.scrollTo({ top: Math.max(0, offset), behavior: "smooth" });
+    }
   },
 
   onPlayState(playing) {
