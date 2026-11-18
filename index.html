@@ -380,9 +380,14 @@ function parseScore(text) {
     else throw new Error("调号只能用 ♯ 或 ♭: " + spec);
   }
 
-  /** 把一个音符 token 变成事件(鼓或音), 供普通音符和括号和弦共用 */
+  /**
+   * 把一个音符 token 变成事件(鼓或音).
+   *
+   * barAccidentals 记录本小节内已经出现过的临时升降号:
+   *   写过的音高(按位置)这一小节内后面的同名音都跟着变, 直到 `|` 小节线.
+   */
   function emitNote(raw, time, groupDuration, isDrum, treble, octaveShift,
-                    keySharps, keyFlats, forcedInstrument) {
+                    keySharps, keyFlats, forcedInstrument, barAccidentals) {
     const note = parseNoteToken(raw);
     if (note.rest) return;
 
@@ -400,16 +405,26 @@ function parseScore(text) {
       return;
     }
 
-    let midi = positionToMidi(note.position, treble, octaveShift);
+    const positionKey = String(note.position);
+    const baseMidi = positionToMidi(note.position, treble, octaveShift);
     const noteIdx = floorMod(positionToDiatonic(note.position, treble), 7);
-    if (keySharps.has(noteIdx)) midi += 1;
-    if (keyFlats.has(noteIdx)) midi -= 1;
-    if (note.accidental === 1) midi += 1;
-    if (note.accidental === -1) midi -= 1;
-    if (note.accidental === 0) {
-      // 显式还原号: 抵消调号
-      midi = positionToMidi(note.position, treble, octaveShift);
+
+    let shift;
+    if (note.accidental !== null && note.accidental !== undefined) {
+      // 本音带临时记号 → 记住它, 影响本小节后面的同名音
+      shift = note.accidental;
+      if (barAccidentals) barAccidentals.set(positionKey, shift);
+    } else if (barAccidentals && barAccidentals.has(positionKey)) {
+      shift = barAccidentals.get(positionKey);
+    } else if (keySharps.has(noteIdx)) {
+      shift = 1;
+    } else if (keyFlats.has(noteIdx)) {
+      shift = -1;
+    } else {
+      shift = 0;
     }
+
+    const midi = baseMidi + shift;
     if (midi < 0 || midi > 127) return;
 
     const instruments = forcedInstrument ? [forcedInstrument] : instrumentsOfMidi(midi);
@@ -436,10 +451,15 @@ function parseScore(text) {
     }
     let time = startTick;
     let idx = 0;
+    // 本小节内的临时升降号(遇到 | 小节线清空)
+    const barAccidentals = new Map();
 
     while (idx < body.length) {
       const tok = body[idx];
       if (tok === ",") { idx++; continue; }
+
+      // 小节线: 清掉临时升降号
+      if (tok === "|") { barAccidentals.clear(); idx++; continue; }
 
       // 括号和弦: (3.5:8 5.5:8) —— 同一个时值, 同时发音
       if (tok === "(") {
@@ -455,7 +475,7 @@ function parseScore(text) {
         const chordDuration = durationTicks(firstNote.duration, firstNote.dot, bpm);
         for (const rawInner of inner) {
           emitNote(rawInner, time, chordDuration, isDrum, treble, octaveShift,
-                   keySharps, keyFlats, forcedInstrument);
+                   keySharps, keyFlats, forcedInstrument, barAccidentals);
         }
         time += chordDuration;
         continue;
@@ -480,7 +500,7 @@ function parseScore(text) {
 
       for (const raw of group) {
         emitNote(raw, time, groupDuration, isDrum, treble, octaveShift,
-                 keySharps, keyFlats, forcedInstrument);
+                 keySharps, keyFlats, forcedInstrument, barAccidentals);
       }
       time += groupDuration;
     }
