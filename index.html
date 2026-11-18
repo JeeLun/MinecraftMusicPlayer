@@ -1,0 +1,1060 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>音乐播放器 · 五线谱</title>
+<style>
+  :root {
+    --bg: #061116;
+    --panel: #0d2025;
+    --line: #1a4a50;
+    --dim: #3a8f99;
+    --cyan: #65ebf6;
+    --green: #85ea8e;
+    --pink: #e08282;
+    --white: #ffffff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background: var(--bg);
+    color: var(--white);
+    font-family: "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+    display: flex;
+    justify-content: center;
+    padding: 24px 16px 60px;
+  }
+  body::before {
+    content: "";
+    position: fixed; inset: 0;
+    background: repeating-linear-gradient(to bottom,
+      rgba(101,235,246,.045) 0 1px, transparent 1px 4px);
+    pointer-events: none;
+  }
+  .wrap { width: min(960px, 100%); position: relative; }
+  h1 { font-size: 20px; letter-spacing: 2px; margin: 0 0 4px; color: var(--cyan); }
+  .sub { color: var(--dim); font-size: 13px; margin-bottom: 18px; }
+  .panel {
+    background: rgba(13,32,37,.92);
+    border: 1px solid var(--line);
+    padding: 16px;
+    margin-bottom: 16px;
+  }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  button {
+    background: transparent; color: var(--cyan);
+    border: 1px solid var(--line); padding: 7px 14px;
+    font-size: 14px; cursor: pointer; transition: .12s;
+    font-family: inherit;
+  }
+  button:hover:not(:disabled) { border-color: var(--cyan); background: rgba(101,235,246,.08); }
+  button:disabled { color: #2c4a4f; border-color: #17333a; cursor: not-allowed; }
+  button.primary { border-color: var(--cyan); }
+  input[type=file] { display: none; }
+  label.upload {
+    border: 1px dashed var(--line); color: var(--dim);
+    padding: 7px 14px; cursor: pointer; font-size: 14px;
+  }
+  label.upload:hover { border-color: var(--green); color: var(--green); }
+  .list { margin-top: 12px; max-height: 260px; overflow-y: auto; }
+  .item {
+    padding: 7px 10px; border-left: 2px solid transparent;
+    cursor: pointer; font-size: 14px; color: var(--dim);
+    display: flex; justify-content: space-between; gap: 12px;
+  }
+  .item:hover { background: rgba(101,235,246,.06); color: var(--white); }
+  .item.active { border-left-color: var(--cyan); color: var(--cyan); background: rgba(101,235,246,.08); }
+  .item .meta { color: #2f6b71; font-size: 12px; }
+  .now { font-size: 15px; color: var(--white); margin-bottom: 10px; }
+  .now .tag { color: var(--dim); font-size: 13px; margin-left: 8px; }
+  .bar { height: 6px; background: var(--line); position: relative; margin: 10px 0 6px; }
+  .bar > i { position: absolute; left: 0; top: 0; bottom: 0; width: 0; background: var(--cyan); }
+  .stats { display: flex; gap: 18px; color: var(--dim); font-size: 12px; }
+  .log { margin-top: 10px; font-size: 12px; color: var(--pink); white-space: pre-wrap; }
+  .slider { display: flex; align-items: center; gap: 8px; color: var(--dim); font-size: 13px; }
+  input[type=range] { accent-color: var(--cyan); width: 110px; }
+  .hint { color: #2f6b71; font-size: 12px; margin-top: 14px; line-height: 1.7; }
+  code { color: var(--green); background: rgba(133,234,142,.08); padding: 1px 5px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>音乐播放器</h1>
+  <div class="sub">读取仓库 music/ 目录下的乐谱，也可以上传本地 txt</div>
+
+  <div class="panel">
+    <div class="row">
+      <label class="upload" for="file">＋ 上传乐谱(.txt)</label>
+      <input type="file" id="file" accept=".txt,text/plain" multiple>
+      <button id="refresh">刷新列表</button>
+      <div class="slider">
+        <span>音量</span><input type="range" id="volume" min="0" max="1" step="0.05" value="0.8">
+      </div>
+      <div class="slider">
+        <span>音准</span><input type="range" id="tune" min="-12" max="12" step="1" value="0">
+        <span id="tuneVal">0</span>
+      </div>
+    </div>
+    <div class="row" style="margin-top:10px" id="rangeRow">
+      <span style="color:var(--dim);font-size:13px">音色区间</span>
+      <span id="rangeTable" style="display:flex;gap:14px;flex-wrap:wrap;color:#2f6b71;font-size:12px"></span>
+      <label style="color:#2f6b71;font-size:12px;display:flex;align-items:center;gap:4px">
+        <input type="checkbox" id="layerOverlaps" style="accent-color:#65ebf6">重叠叠加
+      </label>
+      <button id="reapply">重新解析</button>
+      <button id="resetRanges">恢复默认</button>
+    </div>
+    <div class="list" id="list"></div>
+    <div class="log" id="log"></div>
+  </div>
+
+  <div class="panel">
+    <div class="now" id="nowName">未选择乐谱</div>
+    <div class="bar"><i id="progress"></i></div>
+    <div class="stats">
+      <span id="timeText">0.0s / 0.0s</span>
+      <span id="noteText">0 个音</span>
+      <span id="bpmText">bpm ?</span>
+    </div>
+    <div class="row" style="margin-top:14px">
+      <button id="play" class="primary" disabled>▶ 播放</button>
+      <button id="pause" disabled>⏸ 暂停</button>
+      <button id="stop" disabled>⏹ 停止</button>
+      <button id="testTone">🔊 试音</button>
+      <span style="color:#2f6b71;font-size:12px" id="soundInfo"></span>
+    </div>
+  </div>
+
+  <div class="hint">
+    目录约定：<code>index.html</code>、<code>music/*.txt</code>、可选 <code>music/index.json</code>（文件列表）、可选 <code>music/sounds/harp.ogg</code>（音符盒音色）。<br>
+    没有 <code>index.json</code> 时会尝试用 GitHub API 列目录；没有 <code>harp.ogg</code> 时用合成音。
+  </div>
+</div>
+
+<script>
+"use strict";
+
+/* ------------------------------------------------------------------ 乐谱解析 */
+// 与 mod 里的 StaffScoreParser 对齐的简化实现：
+//   顶层: G=3♯  F=1♭  bpm=120  V=1   子块: G: { ... } / G(tag): { ... }
+//   音符: 4:8   ♯4:16.   ♭3:8=   0:4(休止)   1:8,3:8(和弦, 用逗号并列)
+const SHARP = "♯", FLAT = "♭", NATURAL = "♮";
+const SEMITONES = [0, 2, 4, 5, 7, 9, 11];
+/** 解析 D 块里的鼓位(九宫格位置 → 鼓编号), 与 mod 的 NoteBlockScanner 对齐 */
+const DRUM_MAP = {
+  "1.5": 200, "2.5": 201, "3.5": 202, "4": 203, "4.5": 204,
+  "5": 205, "5.5": 206, "6": 207, "6.5": 208,
+};
+
+/** 鼓编号 → {音色文件, 变调}  (石材/沙子/玻璃三类共 9 个鼓位) */
+const DRUM_SOUNDS = {
+  200: { file: "basedrum", rate: 1.0 },    // 底鼓
+  201: { file: "snare",    rate: 1.7 },    // 鼓框
+  202: { file: "snare",    rate: 1.0 },    // 军鼓
+  203: { file: "basedrum", rate: 1.35 },   // 高音桶鼓
+  204: { file: "basedrum", rate: 0.8 },    // 低音桶鼓
+  205: { file: "hat",      rate: 0.75 },   // 叮叮镲
+  206: { file: "hat",      rate: 1.0 },    // 踩镲
+  207: { file: "hat",      rate: 0.6 },    // 强音镲
+  208: { file: "hat",      rate: 0.5 },    // 强音镲 2
+};
+
+/**
+ * 五种乐器: 采样基准.
+ *
+ * 游戏里音符盒的变调公式是:
+ *     pitch = 2 ^ ((note - 12) / 12)
+ * 也就是说 note=12 时播放的是 ogg 的**原始录音音高**, note=0 要降一个八度.
+ *
+ * NoteBlockScanner 里的 BASE 是 note=0 的音高, 所以 ogg 的原始音高 = BASE + 12:
+ *     bass   note0=30  →  采样原始 42  (F#2)
+ *     guitar note0=42  →  采样原始 54  (F#3)
+ *     harp   note0=54  →  采样原始 66  (F#4)
+ *     flute  note0=66  →  采样原始 78  (F#5)
+ *     chime  note0=78  →  采样原始 90  (F#6)
+ *
+ * 网页里 playbackRate = 2 ^ ((音高 - 采样原始音高) / 12), 所以不能直接用 BASE.
+ */
+const INSTRUMENTS = {
+  bass:   { base: 30, natural: 42 },
+  guitar: { base: 42, natural: 54 },
+  harp:   { base: 54, natural: 66 },
+  flute:  { base: 66, natural: 78 },
+  chime:  { base: 78, natural: 90 },
+};
+
+/**
+ * 音高 → 乐器(只选一个).
+ *
+ * 默认区间互不重叠, 一个音只用一个音色:
+ *     bass   42 ~ 65
+ *     guitar 66 ~ 77
+ *     flute  78 ~ 89
+ *     chime  90 ~ 126
+ *     harp   关闭(打开会顶替 guitar 的区间)
+ *
+ * 如果想让重叠区间同时发声, 勾上面的"重叠叠加"。
+ */
+/**
+ * 音高 → 乐器(只选一个, 区间互不重叠).
+ *
+ * 依据游戏代码 NoteBlockScanner 的基准音高(间隔 12):
+ *     BASS=30  GUITAR=42  HARP=54  FLUTE=66  CHIME=78
+ *
+ * 建筑摆法: 钢琴(harp) 摆 25 个音符盒(两个八度), 其他乐器各 12 个,
+ * 且互不重叠 —— 所以 flute / chime 是"跳过前 12 个位置", 用自己音域的上半段:
+ *
+ *     bass   30 ~ 41     12 个
+ *     guitar 42 ~ 53     12 个
+ *     harp   54 ~ 78     25 个  ← 钢琴, 主旋律在这里
+ *     flute  79 ~ 90     12 个  (66+13 .. 66+24)
+ *     chime  91 ~ 102    12 个  (78+13 .. 78+24)
+ */
+const INSTRUMENT_RANGES = [
+  { name: "bass",   min: 30, max: 41,  enabled: true },
+  { name: "guitar", min: 42, max: 53,  enabled: true },
+  { name: "harp",   min: 54, max: 78,  enabled: true },
+  { name: "flute",  min: 79, max: 90,  enabled: true },
+  { name: "chime",  min: 91, max: 102, enabled: true },
+];
+
+/** 是否允许重叠区间同时发声(默认关闭) */
+const OPTIONS = { layerOverlaps: false };
+
+/** 区间默认值变了就升这个版本号, 旧存档自动作废 */
+const RANGES_VERSION = 5;
+
+/** 返回这个音高要用的乐器; 不叠音时只返回一个 */
+function instrumentsOfMidi(midi) {
+  const hits = [];
+  for (const range of INSTRUMENT_RANGES) {
+    if (!range.enabled) continue;
+    if (midi >= range.min && midi <= range.max) hits.push(range.name);
+  }
+  if (hits.length === 0) {
+    // 落在所有区间之外 → 用最近的区间兜底
+    let best = "harp";
+    let bestDistance = Infinity;
+    for (const range of INSTRUMENT_RANGES) {
+      if (!range.enabled) continue;
+      const distance = midi < range.min ? range.min - midi : midi - range.max;
+      if (distance < bestDistance) { bestDistance = distance; best = range.name; }
+    }
+    return [best];
+  }
+  if (!OPTIONS.layerOverlaps) return [hits[0]];
+  return hits;
+}
+
+// 调号升降顺序(和游戏一致): F C G D A E B / B E A D G C F
+const SHARP_ORDER = [3, 0, 4, 1, 5, 2, 6];
+const FLAT_ORDER  = [6, 2, 5, 1, 4, 0, 3];
+
+/** 去掉 // 行注释和 /* *&#47; 块注释(和 mod 里一致) */
+function stripComments(text) {
+  let out = "";
+  let i = 0;
+  const n = text.length;
+  while (i < n) {
+    const ch = text[i];
+    if (ch === "/" && i + 1 < n) {
+      const next = text[i + 1];
+      if (next === "/") {
+        while (i < n && text[i] !== "\n") i++;
+        continue;
+      }
+      if (next === "*") {
+        i += 2;
+        while (i + 1 < n && !(text[i] === "*" && text[i + 1] === "/")) i++;
+        i = Math.min(i + 2, n);
+        continue;
+      }
+    }
+    out += ch;
+    i++;
+  }
+  return out;
+}
+
+function tokenize(text) {
+  const tokens = [];
+  let i = 0;
+  const n = text.length;
+  const isPunct = (ch) => "{}()|,".includes(ch);
+  while (i < n) {
+    const ch = text[i];
+    if (/\s/.test(ch)) { i++; continue; }
+    if (isPunct(ch)) { tokens.push(ch); i++; continue; }
+    let j = i;
+    while (j < n && !/\s/.test(text[j]) && !isPunct(text[j])) j++;
+    tokens.push(text.slice(i, j));
+    i = j;
+  }
+  return tokens;
+}
+
+function floorDiv(a, b) { return Math.floor(a / b); }
+function floorMod(a, b) { return ((a % b) + b) % b; }
+
+function positionToDiatonic(p, treble) {
+  const stepsD = (p <= -0.5) ? (2 * p + 2) : (2 * p);
+  const steps = Math.round(stepsD);
+  return treble ? steps : steps - 12;
+}
+
+function positionToMidi(p, treble, octaveShift) {
+  const n = positionToDiatonic(p, treble);
+  const octave = floorDiv(n, 7);
+  const idx = floorMod(n, 7);
+  return 60 + 12 * octave + SEMITONES[idx] + 12 * (octaveShift || 0);
+}
+
+/** 解析一个音符 token → {rest, position, accidental, duration, dot, sustain, midiIndex} */
+function parseNoteToken(tok) {
+  const note = { rest: false, position: 0, accidental: null, duration: 4, dot: false, sustain: false };
+  let i = 0;
+  if (tok[0] === SHARP) { note.accidental = 1; i = 1; }
+  else if (tok[0] === FLAT) { note.accidental = -1; i = 1; }
+  else if (tok[0] === NATURAL) { note.accidental = 0; i = 1; }
+
+  const colon = tok.indexOf(":", i);
+  if (colon < 0) throw new Error("音符缺少冒号: " + tok);
+  const posStr = tok.slice(i, colon);
+  let durStr = tok.slice(colon + 1);
+
+  while (durStr.length > 0) {
+    const last = durStr[durStr.length - 1];
+    if (last === "=" || last === "~") { note.sustain = true; durStr = durStr.slice(0, -1); }
+    else if (last === ".") { if (note.dot) throw new Error("不允许双附点: " + tok); note.dot = true; durStr = durStr.slice(0, -1); }
+    else break;
+  }
+  if (!/^\d+$/.test(durStr)) throw new Error("时值不合法: " + tok);
+  note.duration = parseInt(durStr, 10);
+  if (note.duration < 1) throw new Error("时值必须为正: " + tok);
+
+  if (posStr === "0") {
+    if (note.sustain) throw new Error("休止符不能用长音: " + tok);
+    note.rest = true;
+  } else {
+    if (!/^-?\d+(\.5)?$/.test(posStr)) throw new Error("音高写法不合法: " + tok);
+    note.position = parseFloat(posStr);
+  }
+  return note;
+}
+
+function durationTicks(duration, dot, bpm) {
+  let beats = 4 / duration;
+  if (dot) beats *= 1.5;
+  return beats * (1200 / bpm);
+}
+
+/** 连音把 8va/8vb 标签换算成八度偏移 */
+function octaveShiftOf(tags) {
+  let shift = 0;
+  for (const tag of tags) {
+    if (tag === "8va") shift += 1;
+    else if (tag === "8vb") shift -= 1;
+  }
+  return shift;
+}
+
+function parseScore(text) {
+  const tokens = tokenize(stripComments(text));
+  const events = [];
+  const state = {
+    bpm: 120,
+    gSharps: new Set(), gFlats: new Set(),
+    fSharps: new Set(), fFlats: new Set(),
+  };
+
+  function applyKey(setSharps, setFlats, spec) {
+    setSharps.clear(); setFlats.clear();
+    if (spec === "0") return;
+    const last = spec[spec.length - 1];
+    const count = parseInt(spec.slice(0, -1), 10);
+    if (!(count >= 1 && count <= 7)) throw new Error("调号数量必须是 1..7: " + spec);
+    if (last === SHARP) for (let i = 0; i < count; i++) setSharps.add(SHARP_ORDER[i]);
+    else if (last === FLAT) for (let i = 0; i < count; i++) setFlats.add(FLAT_ORDER[i]);
+    else throw new Error("调号只能用 ♯ 或 ♭: " + spec);
+  }
+
+  /** 把一个音符 token 变成事件(鼓或音), 供普通音符和括号和弦共用 */
+  function emitNote(raw, time, groupDuration, isDrum, treble, octaveShift,
+                    keySharps, keyFlats, forcedInstrument) {
+    const note = parseNoteToken(raw);
+    if (note.rest) return;
+
+    if (isDrum) {
+      const key = String(note.position);
+      const drum = DRUM_MAP[key];
+      if (drum === undefined) return;
+      if (note.sustain) {
+        const steps = Math.max(1, Math.round(groupDuration));
+        const base = Math.round(time);
+        for (let k = 0; k < steps; k++) events.push({ tick: base + k, drum, instrument: "drum" });
+      } else {
+        events.push({ tick: Math.round(time), drum, instrument: "drum" });
+      }
+      return;
+    }
+
+    let midi = positionToMidi(note.position, treble, octaveShift);
+    const noteIdx = floorMod(positionToDiatonic(note.position, treble), 7);
+    if (keySharps.has(noteIdx)) midi += 1;
+    if (keyFlats.has(noteIdx)) midi -= 1;
+    if (note.accidental === 1) midi += 1;
+    if (note.accidental === -1) midi -= 1;
+    if (note.accidental === 0) {
+      // 显式还原号: 抵消调号
+      midi = positionToMidi(note.position, treble, octaveShift);
+    }
+    if (midi < 0 || midi > 127) return;
+
+    const instruments = forcedInstrument ? [forcedInstrument] : instrumentsOfMidi(midi);
+    if (note.sustain) {
+      const steps = Math.max(1, Math.round(groupDuration));
+      const base = Math.round(time);
+      for (let k = 0; k < steps; k++) events.push({ tick: base + k, midi, instruments });
+    } else {
+      events.push({ tick: Math.round(time), midi, instruments });
+    }
+  }
+
+  /** 解析一个子块(一个声部), 返回它的结束 tick */
+  function parseVoice(type, tags, body, startTick, bpm) {
+    const isDrum = type === "D";
+    const treble = type !== "F";
+    const keySharps = treble ? state.gSharps : state.fSharps;
+    const keyFlats = treble ? state.gFlats : state.fFlats;
+    const octaveShift = octaveShiftOf(tags);
+    // 乐器由音高决定(见 instrumentOfMidi); 块头标签只作为临时覆盖
+    let forcedInstrument = null;
+    for (const tag of tags) {
+      if (INSTRUMENTS[tag]) forcedInstrument = tag;
+    }
+    let time = startTick;
+    let idx = 0;
+
+    while (idx < body.length) {
+      const tok = body[idx];
+      if (tok === ",") { idx++; continue; }
+
+      // 括号和弦: (3.5:8 5.5:8) —— 同一个时值, 同时发音
+      if (tok === "(") {
+        const inner = [];
+        idx++;
+        while (idx < body.length && body[idx] !== ")") {
+          if (body[idx] !== ",") inner.push(body[idx]);
+          idx++;
+        }
+        if (idx < body.length) idx++;      // 跳过 )
+        if (inner.length === 0) continue;
+        const firstNote = parseNoteToken(inner[0]);
+        const chordDuration = durationTicks(firstNote.duration, firstNote.dot, bpm);
+        for (const rawInner of inner) {
+          emitNote(rawInner, time, chordDuration, isDrum, treble, octaveShift,
+                   keySharps, keyFlats, forcedInstrument);
+        }
+        time += chordDuration;
+        continue;
+      }
+
+      if (!tok.includes(":")) { idx++; continue; }
+
+      // 和弦: 连续的音符用逗号连接
+      const group = [];
+      while (idx < body.length) {
+        const t = body[idx];
+        if (t === ",") { idx++; continue; }
+        if (!t.includes(":")) break;
+        group.push(t);
+        idx++;
+        if (body[idx] !== ",") break;
+      }
+      if (group.length === 0) break;
+
+      const first = parseNoteToken(group[0]);
+      const groupDuration = durationTicks(first.duration, first.dot, bpm);
+
+      for (const raw of group) {
+        emitNote(raw, time, groupDuration, isDrum, treble, octaveShift,
+                 keySharps, keyFlats, forcedInstrument);
+      }
+      time += groupDuration;
+    }
+    return Math.round(time);
+  }
+
+  let i = 0;
+  const n = tokens.length;
+  // blockStart: 当前顶层块的起点; blockEnd: 这个块里所有声部的最晚结束
+  let blockStart = 0;
+  let blockEnd = 0;
+
+  while (i < n) {
+    const tok = tokens[i];
+
+    if (tok === "}") {
+      // 一个顶层块结束 → 下一块从这一块的最晚结束处开始
+      blockStart = Math.max(blockStart, blockEnd);
+      i++;
+      continue;
+    }
+    if (tok === "{" || tok === ",") { i++; continue; }
+
+    // 表头
+    if (tok.startsWith("G=") && tok.length > 2) { applyKey(state.gSharps, state.gFlats, tok.slice(2)); i++; continue; }
+    if (tok.startsWith("F=") && tok.length > 2) { applyKey(state.fSharps, state.fFlats, tok.slice(2)); i++; continue; }
+    if (tok.startsWith("bpm=") && tok.length > 4) {
+      const bpm = parseInt(tok.slice(4).trim(), 10);
+      if (!(bpm > 0)) throw new Error("bpm 必须为正: " + tok);
+      state.bpm = bpm; i++; continue;
+    }
+    if (tok.startsWith("V=")) { i++; continue; }
+
+    // 子块头
+    let type = null;
+    const tags = [];
+    if (tok.length === 2 && tok[1] === ":" && "GFDV".includes(tok[0])) {
+      type = tok[0]; i++;
+    } else if (tok.length === 1 && "GFDV".includes(tok)) {
+      type = tok; i++;
+      if (tokens[i] === "(") {
+        i++;
+        while (i < n && tokens[i] !== ")") {
+          if (tokens[i] !== ",") tags.push(tokens[i]);
+          i++;
+        }
+        if (i >= n) throw new Error("标签列表缺少 )");
+        i++;
+      }
+      if (tokens[i] !== ":") throw new Error("子块头后面应该是 :");
+      i++;
+    } else {
+      throw new Error("无法识别的记号: " + tok);
+    }
+
+    if (tokens[i] !== "{") throw new Error("子块头后面应该是 {");
+    i++;
+    const body = [];
+    while (i < n && tokens[i] !== "}") { body.push(tokens[i]); i++; }
+    if (i >= n) throw new Error("子块没有闭合的 }");
+    i++;
+
+    if (type === "V") continue;   // 歌词块跳过
+
+    const end = parseVoice(type, tags, body, blockStart, state.bpm);
+    blockEnd = Math.max(blockEnd, end);
+  }
+
+  events.sort((a, b) => a.tick - b.tick);
+  return { events, bpm: state.bpm };
+}
+
+/* ------------------------------------------------------------------ 音频 */
+const audio = {
+  ctx: null,
+  samples: {},        // {harp: AudioBuffer, basedrum: ...}
+  gain: null,
+  tune: 0,
+
+  ensure() {
+    if (this.ctx) return this.ctx;
+    this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+    this.gain = this.ctx.createGain();
+    this.gain.gain.value = 0.8;
+    this.gain.connect(this.ctx.destination);
+    return this.ctx;
+  },
+
+  /** 预加载 music/sounds/<name>.ogg */
+  async loadSounds(names) {
+    await this.ensure();
+    const loaded = [];
+    for (const name of names) {
+      const url = `music/sounds/${name}.ogg`;
+      try {
+        const response = await fetch(url, { cache: "no-cache" });
+        if (!response.ok) continue;
+        const buffer = await response.arrayBuffer();
+        this.samples[name] = await this.ctx.decodeAudioData(buffer);
+        loaded.push(name);
+      } catch (error) { /* 没有就跳过 */ }
+    }
+    return loaded;
+  },
+
+  /** 播放一条事件(乐器音或鼓) */
+  playEvent(event, when) {
+    const ctx = this.ensure();
+    const t = when ?? ctx.currentTime;
+    if (event.drum !== undefined) {
+      const spec = DRUM_SOUNDS[event.drum] || { file: "hat", rate: 1 };
+      this.playSample(spec.file, spec.rate, t, 0.9);
+      return;
+    }
+    if (event.drum !== undefined) {
+      const spec = DRUM_SOUNDS[event.drum] || { file: "hat", rate: 1 };
+      this.playSample(spec.file, spec.rate, t, 0.9);
+      return;
+    }
+    const names = event.instruments || [event.instrument || "harp"];
+    // 多个音色叠在一起时稍微降低每个的音量, 避免过载
+    const volume = names.length > 1 ? 0.65 : 1.0;
+    let anyPlayed = false;
+    for (const name of names) {
+      const spec = INSTRUMENTS[name] || INSTRUMENTS.harp;
+      const natural = spec.natural ?? (spec.base + 12);
+      const semis = event.midi - natural + this.tune;
+      const rate = Math.pow(2, semis / 12);
+      if (this.playSample(name, rate, t, volume)) anyPlayed = true;
+    }
+    if (anyPlayed) return;
+    {
+      // 没有对应音色 → 合成音兜底
+      const freq = 440 * Math.pow(2, (event.midi - 69) / 12);
+      const osc = ctx.createOscillator();
+      const env = ctx.createGain();
+      osc.type = names[0] === "bass" ? "sine" : "triangle";
+      osc.frequency.value = freq;
+      env.gain.setValueAtTime(0.0001, t);
+      env.gain.exponentialRampToValueAtTime(0.3, t + 0.01);
+      env.gain.exponentialRampToValueAtTime(0.0001, t + 0.5);
+      osc.connect(env).connect(this.gain);
+      osc.start(t);
+      osc.stop(t + 0.55);
+    }
+  },
+
+  /** 用采样播放, 返回是否成功 */
+  playSample(name, rate, when, volume) {
+    const buffer = this.samples[name];
+    if (!buffer) return false;
+    const ctx = this.ensure();
+    const src = ctx.createBufferSource();
+    src.buffer = buffer;
+    src.playbackRate.value = Math.max(0.25, Math.min(4, rate));
+    const g = ctx.createGain();
+    g.gain.value = volume;
+    src.connect(g).connect(this.gain);
+    src.start(when);
+    return true;
+  },
+
+  /** 兼容旧调用: 播放一个 midi 音 */
+  play(midi, when) {
+    this.playEvent({ midi, instrument: "harp" }, when);
+  },
+};
+
+/* ------------------------------------------------------------------ 播放器 */
+const TICK_MS = 50;
+const player = {
+  score: null,
+  name: "",
+  playing: false,
+  startAt: 0,       // performance.now() 基准
+  startTick: 0,
+  nextIndex: 0,
+  timer: null,
+  totalTicks: 0,
+
+  load(name, text) {
+    this.stop();
+    window.currentScoreText = text;
+    let result;
+    try {
+      result = parseScore(text);
+    } catch (error) {
+      ui.log(`解析失败(${name}): ${error.message}`);
+      return;
+    }
+    if (!result.events.length) {
+      ui.log(`解析成功但没有音符(${name})，检查一下是不是只有休止符`);
+      return;
+    }
+    this.score = result;
+    this.name = name;
+    this.nextIndex = 0;
+    this.totalTicks = result.events[result.events.length - 1].tick;
+
+    // 顺便报告音域, 方便核对音高是否正常
+    let lowest = 999, highest = -1, drums = 0;
+    for (const event of result.events) {
+      if (event.drum !== undefined) { drums++; continue; }
+      lowest = Math.min(lowest, event.midi);
+      highest = Math.max(highest, event.midi);
+    }
+    const range = highest >= 0
+      ? `音域 ${lowest}~${highest}`
+      : "无旋律音";
+    ui.log(`已载入 ${name}: ${result.events.length} 个音(鼓 ${drums}), bpm ${result.bpm}, `
+      + `${range}, 时长 ${(this.totalTicks * TICK_MS / 1000).toFixed(1)}s`);
+    ui.onLoaded(name, result);
+  },
+
+  play() {
+    if (!this.score) {
+      ui.log("还没有载入乐谱");
+      return;
+    }
+    try {
+      audio.ensure();
+      if (audio.ctx.state === "suspended") audio.ctx.resume();
+    } catch (error) {
+      ui.log("音频初始化失败: " + error.message);
+      return;
+    }
+    this.playing = true;
+    this.startAt = performance.now();
+    this.startTick = 0;
+    this.currentTick0 = 0;
+    this.currentTick = 0;
+    this.nextIndex = 0;
+    clearInterval(this.timer);
+    this.timer = setInterval(() => {
+      try {
+        this.schedule();
+      } catch (error) {
+        ui.log("播放出错: " + error.message);
+        this.stop();
+      }
+    }, 20);
+    ui.onPlayState(true);
+    ui.log("开始播放: " + this.name);
+  },
+
+  pause() {
+    if (!this.playing) return;
+    this.currentTick = this.tickNow();
+    this.playing = false;
+    clearInterval(this.timer);
+    ui.onPlayState(false);
+  },
+
+  stop() {
+    this.playing = false;
+    clearInterval(this.timer);
+    this.currentTick = 0;
+    this.nextIndex = 0;
+    ui.onPlayState(false);
+    ui.setProgress(0, this.totalTicks || 0);
+  },
+
+  tickNow() {
+    if (!this.playing) return this.currentTick || 0;
+    return this.currentTick0 + (performance.now() - this.startAt) / TICK_MS;
+  },
+
+  schedule() {
+    if (!this.score) return;
+    const now = this.tickNow();
+    const lookahead = 6;   // 提前 6 tick(0.3s) 排程
+    const events = this.score.events;
+    while (this.nextIndex < events.length && events[this.nextIndex].tick <= now + lookahead) {
+      const event = events[this.nextIndex++];
+      const when = audio.ctx.currentTime + Math.max(0, (event.tick - now) * TICK_MS / 1000);
+      audio.playEvent(event, when);
+    }
+    ui.setProgress(now, this.totalTicks);
+    if (this.nextIndex >= events.length && now > this.totalTicks + 20) this.stop();
+  },
+};
+player.currentTick0 = 0;
+player.currentTick = 0;
+
+/* ------------------------------------------------------------------ 界面 */
+const ui = {
+  listEl: document.getElementById("list"),
+  logEl: document.getElementById("log"),
+  nowEl: document.getElementById("nowName"),
+  progressEl: document.getElementById("progress"),
+  timeEl: document.getElementById("timeText"),
+  noteEl: document.getElementById("noteText"),
+  bpmEl: document.getElementById("bpmText"),
+  local: [],     // {name, text}
+  remote: [],    // {name, url}
+
+  log(message) { this.logEl.textContent = message || ""; },
+
+  async refresh() {
+    this.log("");
+    this.remote = [];
+    // 优先读 music/index.json(推荐的清单)
+    try {
+      const response = await fetch("music/index.json", { cache: "no-cache" });
+      if (response.ok) {
+        const data = await response.json();
+        const files = Array.isArray(data) ? data : (data.files || []);
+        this.remote = files.map((entry) =>
+          typeof entry === "string"
+            ? { name: entry.replace(/\.txt$/i, ""), url: "music/" + entry }
+            : { name: entry.name || entry.file, url: "music/" + entry.file });
+      }
+    } catch (error) { /* 没有清单就继续尝试 API */ }
+
+    // 没有清单时用 GitHub API 列目录
+    if (this.remote.length === 0) {
+      const match = location.hostname.match(/^([^.]+)\.github\.io$/);
+      const repo = location.pathname.split("/").filter(Boolean)[0];
+      if (match && repo) {
+        try {
+          const api = `https://api.github.com/repos/${match[1]}/${repo}/contents/music`;
+          const response = await fetch(api);
+          if (response.ok) {
+            const items = await response.json();
+            this.remote = items
+              .filter((item) => item.name.toLowerCase().endsWith(".txt"))
+              .map((item) => ({ name: item.name.replace(/\.txt$/i, ""), url: item.download_url }));
+          }
+        } catch (error) { /* 忽略 */ }
+      }
+    }
+    this.render();
+    if (this.remote.length === 0 && this.local.length === 0) {
+      this.log("music/ 里没找到乐谱。可以上传本地 txt，或在仓库根目录放 music/index.json 列出文件。");
+    }
+  },
+
+  render() {
+    this.listEl.innerHTML = "";
+    const entries = [
+      ...this.local.map((item, index) => ({ ...item, kind: "local", index })),
+      ...this.remote.map((item, index) => ({ ...item, kind: "remote", index })),
+    ];
+    if (entries.length === 0) {
+      this.listEl.innerHTML = '<div class="item" style="cursor:default">（暂无乐谱）</div>';
+      return;
+    }
+    for (const entry of entries) {
+      const div = document.createElement("div");
+      div.className = "item";
+      div.innerHTML = `<span>${entry.name}</span><span class="meta">${entry.kind === "local" ? "本地" : "仓库"}</span>`;
+      div.onclick = async () => {
+        if (entry.kind === "local") {
+          this.loadLocal(entry.index);
+        } else {
+          await this.loadRemote(entry.index);
+        }
+      };
+      this.listEl.appendChild(div);
+    }
+  },
+
+  loadLocal(index) {
+    const item = this.local[index];
+    player.load(item.name, item.text);
+    this.markActive(item.name);
+  },
+
+  async loadRemote(index) {
+    const item = this.remote[index];
+    this.log("正在下载: " + item.name);
+    try {
+      // 文件名里有空格/中文/引号, 必须按路径段编码
+      const url = String(item.url).split("/").map(encodeURIComponent).join("/");
+      const response = await fetch(url, { cache: "no-cache" });
+      if (!response.ok) throw new Error("HTTP " + response.status);
+      const text = await response.text();
+      if (!text.trim().startsWith("{") && !text.trim().startsWith("1=")) {
+        throw new Error("文件不像乐谱(应以 { 开头)");
+      }
+      player.load(item.name, text);
+      this.markActive(item.name);
+      this.log("");
+    } catch (error) {
+      this.log("加载失败: " + error.message);
+    }
+  },
+
+  markActive(name) {
+    for (const el of this.listEl.children) {
+      el.classList.toggle("active", el.firstChild && el.firstChild.textContent === name);
+    }
+  },
+
+  onLoaded(name, result) {
+    this.nowEl.innerHTML = `${name}<span class="tag">${result.events.length} 个音 · bpm ${result.bpm}</span>`;
+    this.bpmEl.textContent = "bpm " + result.bpm;
+    this.noteEl.textContent = result.events.length + " 个音";
+    document.getElementById("play").disabled = false;
+    this.setProgress(0, player.totalTicks);
+  },
+
+  onPlayState(playing) {
+    document.getElementById("play").disabled = playing;
+    document.getElementById("pause").disabled = !playing;
+    document.getElementById("stop").disabled = !playing && !player.score;
+    document.getElementById("play").textContent = playing ? "▶ 播放中" : "▶ 播放";
+  },
+
+  setProgress(tick, total) {
+    const ratio = total > 0 ? Math.min(1, tick / total) : 0;
+    this.progressEl.style.width = (ratio * 100) + "%";
+    this.timeEl.textContent = (tick * TICK_MS / 1000).toFixed(1) + "s / "
+      + (total * TICK_MS / 1000).toFixed(1) + "s";
+  },
+};
+
+/* ------------------------------------------------------------------ 事件绑定 */
+document.getElementById("file").addEventListener("change", async (event) => {
+  const files = Array.from(event.target.files || []);
+  for (const file of files) {
+    const text = await file.text();
+    if (!text.trim().startsWith("{")) {
+      ui.log(`${file.name} 不是乐谱文件(应以 { 开头)`);
+      continue;
+    }
+    ui.local.push({ name: file.name.replace(/\.txt$/i, ""), text });
+  }
+  ui.render();
+  event.target.value = "";
+});
+
+document.getElementById("refresh").onclick = () => ui.refresh();
+document.getElementById("play").onclick = () => {
+  if (player.currentTick > 0) {           // 从暂停处继续
+    player.currentTick0 = player.currentTick;
+    player.startAt = performance.now();
+    player.playing = true;
+    clearInterval(player.timer);
+    player.timer = setInterval(() => player.schedule(), 20);
+    ui.onPlayState(true);
+  } else {
+    player.play();
+  }
+};
+document.getElementById("pause").onclick = () => player.pause();
+document.getElementById("stop").onclick = () => player.stop();
+document.getElementById("testTone").onclick = () => {
+  try {
+    audio.ensure();
+    if (audio.ctx.state === "suspended") audio.ctx.resume();
+    audio.playEvent({ midi: 60, instrument: "harp" });
+    setTimeout(() => audio.playEvent({ midi: 64, instrument: "harp" }), 250);
+    setTimeout(() => audio.playEvent({ midi: 67, instrument: "harp" }), 500);
+    setTimeout(() => audio.playEvent({ drum: 200 }), 750);
+    setTimeout(() => audio.playEvent({ drum: 202 }), 900);
+    setTimeout(() => audio.playEvent({ drum: 206 }), 1050);
+    ui.log("试音已发送(C-E-G + 底鼓/军鼓/踩镲)  ctx=" + audio.ctx.state
+      + "  已加载音色=" + Object.keys(audio.samples).length + " 个");
+  } catch (error) {
+    ui.log("试音失败: " + error.message);
+  }
+};
+document.getElementById("volume").oninput = (event) => {
+  audio.ensure();
+  audio.gain.gain.value = parseFloat(event.target.value);
+};
+document.getElementById("tune").oninput = (event) => {
+  audio.tune = parseInt(event.target.value, 10);
+  document.getElementById("tuneVal").textContent = event.target.value;
+};
+
+/* 音色区间: 每个乐器一行 min/max/开关, 改了以后重新解析 */
+function buildRangeTable() {
+  const holder = document.getElementById("rangeTable");
+  holder.innerHTML = "";
+  INSTRUMENT_RANGES.forEach((range, index) => {
+    const cell = document.createElement("span");
+    cell.style.display = "flex";
+    cell.style.alignItems = "center";
+    cell.style.gap = "4px";
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.checked = range.enabled;
+    box.style.accentColor = "#65ebf6";
+    box.onchange = () => { range.enabled = box.checked; saveRanges(); };
+    const label = document.createElement("span");
+    label.textContent = range.name;
+    const minInput = document.createElement("input");
+    minInput.type = "number"; minInput.value = range.min; minInput.min = 0; minInput.max = 127;
+    minInput.style.cssText = "width:48px;background:transparent;color:var(--cyan);border:1px solid var(--line);padding:2px";
+    minInput.onchange = () => { range.min = parseInt(minInput.value, 10) || 0; range.enabled = true; box.checked = true; saveRanges(); };
+    const dash = document.createElement("span");
+    dash.textContent = "~";
+    const maxInput = document.createElement("input");
+    maxInput.type = "number"; maxInput.value = range.max; maxInput.min = 0; maxInput.max = 127;
+    maxInput.style.cssText = "width:48px;background:transparent;color:var(--cyan);border:1px solid var(--line);padding:2px";
+    maxInput.onchange = () => { range.max = parseInt(maxInput.value, 10) || 127; range.enabled = true; box.checked = true; saveRanges(); };
+    cell.append(box, label, minInput, dash, maxInput);
+    holder.appendChild(cell);
+  });
+}
+
+function saveRanges() {
+  try {
+    localStorage.setItem("instrumentRanges", JSON.stringify({
+      version: RANGES_VERSION,
+      ranges: INSTRUMENT_RANGES,
+    }));
+  } catch (error) { /* 忽略 */ }
+}
+
+function loadRanges() {
+  try {
+    const saved = JSON.parse(localStorage.getItem("instrumentRanges") || "null");
+    if (!saved || saved.version !== RANGES_VERSION) {
+      return;      // 版本不符 → 用新的默认值
+    }
+    if (Array.isArray(saved.ranges)) {
+      for (const item of saved.ranges) {
+        const target = INSTRUMENT_RANGES.find((range) => range.name === item.name);
+        if (target) Object.assign(target, item);
+      }
+    }
+  } catch (error) { /* 忽略 */ }
+}
+
+document.getElementById("reapply").onclick = () => {
+  if (window.currentScoreText && player.name) {
+    player.load(player.name, window.currentScoreText);
+    ui.log("已按新区间重新解析: " + player.name);
+  }
+};
+
+document.getElementById("resetRanges").onclick = () => {
+  INSTRUMENT_RANGES[0].min = 30; INSTRUMENT_RANGES[0].max = 41; INSTRUMENT_RANGES[0].enabled = true;
+  INSTRUMENT_RANGES[1].min = 42; INSTRUMENT_RANGES[1].max = 53; INSTRUMENT_RANGES[1].enabled = true;
+  INSTRUMENT_RANGES[2].min = 54; INSTRUMENT_RANGES[2].max = 78; INSTRUMENT_RANGES[2].enabled = true;
+  INSTRUMENT_RANGES[3].min = 79; INSTRUMENT_RANGES[3].max = 90; INSTRUMENT_RANGES[3].enabled = true;
+  INSTRUMENT_RANGES[4].min = 91; INSTRUMENT_RANGES[4].max = 102; INSTRUMENT_RANGES[4].enabled = true;
+  OPTIONS.layerOverlaps = false;
+  document.getElementById("layerOverlaps").checked = false;
+  saveRanges();
+  buildRangeTable();
+  ui.log("音色区间已恢复默认(单音色, 不叠音)");
+};
+
+document.getElementById("layerOverlaps").onchange = (event) => {
+  OPTIONS.layerOverlaps = event.target.checked;
+  try {
+    localStorage.setItem("layerOverlaps", event.target.checked ? "1" : "0");
+  } catch (error) { /* 忽略 */ }
+  ui.log(event.target.checked
+    ? "已开启重叠叠加: 区间重叠的音会同时发声"
+    : "已关闭重叠叠加: 每个音只用一个音色");
+};
+
+/* 启动 */
+(async () => {
+  loadRanges();
+  try {
+    OPTIONS.layerOverlaps = localStorage.getItem("layerOverlaps") === "1";
+  } catch (error) { /* 忽略 */ }
+  document.getElementById("layerOverlaps").checked = OPTIONS.layerOverlaps;
+  buildRangeTable();
+  const names = ["harp", "bass", "guitar", "flute", "chime",
+                 "basedrum", "snare", "hat", "bell", "xylophone"];
+  const loaded = await audio.loadSounds(names);
+  const missing = names.length - loaded.length;
+  document.getElementById("soundInfo").textContent = loaded.length === 0
+    ? "音色: 合成音(未找到 music/sounds/*.ogg)"
+    : `音色: ${loaded.length} 个已加载${missing > 0 ? `，${missing} 个缺失(用合成音补齐)` : ""}`;
+  await ui.refresh();
+})();
+</script>
+</body>
+</html>
