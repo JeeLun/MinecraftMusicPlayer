@@ -114,7 +114,7 @@
     <div class="now" style="color:var(--dim);font-size:13px;margin-bottom:8px">
       歌词 <span class="tag" id="lyricCount"></span>
     </div>
-    <div id="lyrics" style="max-height:170px;overflow-y:auto;line-height:2.1;font-size:15px;color:#7f9ea3"></div>
+    <div id="lyrics" style="max-height:220px;overflow-y:auto;line-height:1.9;font-size:15px"></div>
   </div>
 
   <div class="panel">
@@ -322,6 +322,12 @@ function tokenize(text) {
 
 function floorDiv(a, b) { return Math.floor(a / b); }
 function floorMod(a, b) { return ((a % b) + b) % b; }
+
+/** HTML 转义(歌词要按 HTML 渲染颜色, 先转义文本) */
+function escapeHtml(text) {
+  return String(text).replace(/[&<>"]/g,
+    (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch]));
+}
 
 function positionToDiatonic(p, treble) {
   const stepsD = (p <= -0.5) ? (2 * p + 2) : (2 * p);
@@ -1028,6 +1034,39 @@ const ui = {
   lyricLines: [],
   activeLyric: -1,
 
+  /** 把游戏颜色代码(&e 之类)和 ■ 分隔转成 HTML */
+  formatLyric(raw) {
+    const COLORS = {
+      "0": "#4a4a4a", "1": "#3f5fbf", "2": "#4a8a45", "3": "#3f8f8f",
+      "4": "#a8453f", "5": "#8f4abf", "6": "#c9a34a", "7": "#b9b9b9",
+      "8": "#6b6b6b", "9": "#6a8fe8", "a": "#85ea8e", "b": "#65d9f0",
+      "c": "#e08282", "d": "#e79ade", "e": "#d9c46a", "f": "#ffffff",
+    };
+    const escape = (s) => s.replace(/[&<>]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[ch]));
+    // 用 | 拆成多行(日文 / 中文各占一行)
+    const phrases = String(raw).split("|");
+    return phrases.map((phrase) => {
+      let html = "";
+      let color = null;
+      let bold = false;
+      const parts = phrase.split(/(&[0-9a-fk-or])/i);
+      for (const part of parts) {
+        if (!part) continue;
+        const code = part.toLowerCase();
+        if (/^&[0-9a-f]$/.test(code)) { color = COLORS[code[1]]; continue; }
+        if (code === "&l") { bold = true; continue; }
+        if (code === "&r") { color = null; bold = false; continue; }
+        if (/^&[k-or]$/.test(code)) continue;      // 其它样式忽略
+        const style = [];
+        if (color) style.push(`color:${color}`);
+        if (bold) style.push("font-weight:700");
+        const text = escape(part);
+        html += style.length ? `<span style="${style.join(";")}">${text}</span>` : text;
+      }
+      return html;
+    }).filter((segment) => segment.trim().length > 0);
+  },
+
   renderLyrics(lyrics) {
     const panel = document.getElementById("lyricPanel");
     const holder = document.getElementById("lyrics");
@@ -1041,20 +1080,19 @@ const ui = {
     panel.style.display = "";
     document.getElementById("lyricCount").textContent = lyrics.length + " 句";
     lyrics.forEach((line, index) => {
-      const span = document.createElement("span");
-      span.dataset.index = String(index);
-      span.style.marginRight = "14px";
-      span.style.transition = "color .12s";
-      span.textContent = line.text;
-      span.onclick = () => {
-        // 点歌词可以跳转(停止后再按播放)
-        return;
-      };
-      holder.appendChild(span);
+      const div = document.createElement("div");
+      div.dataset.index = String(index);
+      div.style.margin = "4px 0";
+      div.style.transition = "color .12s, opacity .12s";
+      div.style.color = "#7f9ea3";
+      div.style.wordBreak = "break-word";
+      const segments = this.formatLyric(line.text);
+      div.innerHTML = segments.length ? segments.join("<br>") : escapeHtml(line.text);
+      holder.appendChild(div);
     });
   },
 
-  /** 根据当前 tick 高亮正在唱的那句 */
+  /** 只显示当前句 + 前后各两句, 并高亮当前句 */
   updateLyrics(tick) {
     const lines = this.lyricLines;
     if (!lines || lines.length === 0) return;
@@ -1065,16 +1103,20 @@ const ui = {
     }
     if (index === this.activeLyric) return;
     this.activeLyric = index;
+
     const holder = document.getElementById("lyrics");
-    const children = holder.children;
-    for (let i = 0; i < children.length; i++) {
+    for (let i = 0; i < holder.children.length; i++) {
+      const element = holder.children[i];
+      const distance = index < 0 ? 99 : Math.abs(i - index);
+      const visible = index < 0 ? i < 3 : distance <= 2;
+      element.style.display = visible ? "" : "none";
       const active = i === index;
-      children[i].style.color = active ? "var(--cyan)" : "#7f9ea3";
-      children[i].style.fontWeight = active ? "700" : "400";
-      children[i].style.textShadow = active ? "0 0 10px rgba(101,235,246,.55)" : "none";
+      element.style.color = active ? "var(--cyan)" : (distance === 2 ? "#4a6a6f" : "#7f9ea3");
+      element.style.fontWeight = active ? "700" : "400";
+      element.style.textShadow = active ? "0 0 10px rgba(101,235,246,.55)" : "none";
     }
-    if (index >= 0 && children[index]) {
-      const target = children[index];
+    if (index >= 0 && holder.children[index]) {
+      const target = holder.children[index];
       const offset = target.offsetTop - holder.clientHeight / 2 + target.offsetHeight / 2;
       holder.scrollTo({ top: Math.max(0, offset), behavior: "smooth" });
     }
