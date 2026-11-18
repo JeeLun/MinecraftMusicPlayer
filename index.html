@@ -706,20 +706,35 @@ const audio = {
     return this.ctx;
   },
 
-  /** 预加载 music/sounds/<name>.ogg */
+  /** 预加载 music/sounds/<name>.<ext>; 按浏览器支持挑格式(手机不认 ogg) */
   async loadSounds(names) {
     await this.ensure();
+    const probe = document.createElement("audio");
+    const oggOk = !!probe.canPlayType('audio/ogg; codecs="vorbis"');
+    const mp3Ok = !!probe.canPlayType("audio/mpeg");
+    const m4aOk = !!probe.canPlayType("audio/mp4");
+    // 支持 ogg 就优先 ogg(音质与体积最好), 否则退回 mp3 / m4a
+    const order = [];
+    if (oggOk) order.push(".ogg");
+    if (mp3Ok) order.push(".mp3");
+    if (m4aOk) order.push(".m4a");
+    if (order.length === 0) order.push(".ogg");
+
+    this.formatOrder = order;
     const loaded = [];
     for (const name of names) {
-      const url = `music/sounds/${name}.ogg`;
-      try {
-        const response = await fetch(url, { cache: "no-cache" });
-        if (!response.ok) continue;
-        const buffer = await response.arrayBuffer();
-        this.samples[name] = await this.ctx.decodeAudioData(buffer);
-        loaded.push(name);
-      } catch (error) { /* 没有就跳过 */ }
+      for (const extension of order) {
+        try {
+          const response = await fetch(`music/sounds/${name}${extension}`, { cache: "no-cache" });
+          if (!response.ok) continue;
+          const buffer = await response.arrayBuffer();
+          this.samples[name] = await this.ctx.decodeAudioData(buffer);
+          loaded.push(name + extension);
+          break;
+        } catch (error) { /* 这个格式不行就下一个 */ }
+      }
     }
+    this.oggSupport = oggOk;
     return loaded;
   },
 
@@ -1313,9 +1328,15 @@ document.getElementById("layerOverlaps").onchange = (event) => {
                  "basedrum", "snare", "hat", "bell", "xylophone"];
   const loaded = await audio.loadSounds(names);
   const missing = names.length - loaded.length;
+  const formats = [...new Set(loaded.map((item) => item.slice(item.lastIndexOf("."))))].join("/");
   document.getElementById("soundInfo").textContent = loaded.length === 0
-    ? "音色: 合成音(未找到 music/sounds/*.ogg)"
-    : `音色: ${loaded.length} 个已加载${missing > 0 ? `，${missing} 个缺失(用合成音补齐)` : ""}`;
+    ? "音色: 合成音(未找到 music/sounds/*)"
+    : `音色: ${loaded.length}/${names.length} 已加载${missing > 0 ? `，${missing} 个用合成音` : ""}`
+      + (formats ? `  (${formats})` : "");
+  if (!audio.oggSupport) {
+    ui.log("这个浏览器不支持 ogg 音色，已自动改用 mp3/m4a。"
+      + "如果听不到真实音色，请把 music/sounds/ 里的 .ogg 转成 .mp3（可用 tools/convert_sounds.py）。");
+  }
   await ui.refresh();
 })();
 </script>
